@@ -1,0 +1,153 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  schedule:
+    - cron:  '0 0 * * *'
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scalaVersion: ['2.12.20', '2.13.15', '3.3.4', '3.6.2']
+        javaTag: [
+          'graalvm-community-22.0.1',
+          'graalvm-community-21.0.2',
+          'graalvm-ce-22.3.3-b1-java17',
+          'eclipse-temurin-23.0.1_11',
+          'eclipse-temurin-21.0.5_11',
+          'eclipse-temurin-17.0.13_11',
+          'eclipse-temurin-alpine-23.0.1_11',
+          'eclipse-temurin-alpine-21.0.5_11',
+          'eclipse-temurin-alpine-17.0.13_11',
+          'amazoncorretto-al2023-21.0.5',
+          'amazoncorretto-al2023-17.0.13'
+        ]
+        include:
+          # https://github.com/graalvm/container/pkgs/container/graalvm-community
+          - javaTag: 'graalvm-community-22.0.1'
+            dockerContext: 'graalvm-community'
+            baseImageTag: '22.0.1-ol9'
+            platforms: 'linux/amd64,linux/arm64'
+          - javaTag: 'graalvm-community-21.0.2'
+            dockerContext: 'graalvm-community'
+            baseImageTag: '21.0.2-ol9'
+            platforms: 'linux/amd64,linux/arm64'
+          # https://github.com/graalvm/container/pkgs/container/graalvm-ce
+          - javaTag: 'graalvm-ce-22.3.3-b1-java17'
+            dockerContext: 'graalvm-ce'
+            baseImageTag: 'ol9-java17-22.3.3-b1'
+            platforms: 'linux/amd64,linux/arm64'
+          # https://hub.docker.com/_/eclipse-temurin/tags
+          - javaTag: 'eclipse-temurin-23.0.1_11'
+            dockerContext: 'eclipse-temurin'
+            baseImageTag: '23.0.1_11-jdk'
+            platforms: 'linux/amd64,linux/arm64'
+          - javaTag: 'eclipse-temurin-21.0.5_11'
+            dockerContext: 'eclipse-temurin'
+            baseImageTag: '21.0.5_11-jdk'
+            platforms: 'linux/amd64,linux/arm64'
+          - javaTag: 'eclipse-temurin-17.0.13_11'
+            dockerContext: 'eclipse-temurin'
+            baseImageTag: '17.0.13_11-jdk'
+            platforms: 'linux/amd64,linux/arm64'
+          # https://hub.docker.com/_/eclipse-temurin/tags?page=1&name=alpine
+          - javaTag: 'eclipse-temurin-alpine-23.0.1_11'
+            dockerContext: 'eclipse-temurin'
+            dockerfile: 'alpine.Dockerfile'
+            baseImageTag: '23.0.1_11-jdk-alpine'
+            platforms: 'linux/amd64,linux/arm64/v8'
+          - javaTag: 'eclipse-temurin-alpine-21.0.5_11'
+            dockerContext: 'eclipse-temurin'
+            dockerfile: 'alpine.Dockerfile'
+            baseImageTag: '21.0.2_13-jdk-alpine'
+            platforms: 'linux/amd64,linux/arm64/v8'
+          - javaTag: 'eclipse-temurin-alpine-17.0.13_11'
+            dockerContext: 'eclipse-temurin'
+            dockerfile: 'alpine.Dockerfile'
+            baseImageTag: '17.0.13_11-jdk-alpine'
+            platforms: 'linux/amd64'
+          # https://hub.docker.com/_/amazoncorretto/tags
+          - javaTag: 'amazoncorretto-al2023-21.0.5'
+            dockerContext: 'amazoncorretto'
+            baseImageTag: '21.0.5-al2023'
+            platforms: 'linux/amd64'
+          - javaTag: 'amazoncorretto-al2023-17.0.13'
+            dockerContext: 'amazoncorretto'
+            baseImageTag: '17.0.13-al2023'
+            platforms: 'linux/amd64'
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3.2.0
+    - name: Set up Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@v3.8.0
+      #      with:
+      #        install: true
+    - name: Available platforms
+      run: echo ${{ steps.buildx.outputs.platforms }}
+    - name: Get latest SBT version
+      id: get_sbt_version
+      run: |
+        SBT_VERSION=$(
+          curl --silent -L https://github.com/sbt/sbt/releases |
+          grep -i -w -o '>[0-9]*\.[0-9]*\.[0-9]*</a>' |
+          grep -i -w -o '[0-9]*\.[0-9]*\.[0-9]*' |
+          sort --version-sort | tail -n 1)
+        [[ -z "$SBT_VERSION" ]] && { echo "Failed to get latest sbt version" ; exit 1; }
+        echo "VERSION=$SBT_VERSION" >> $GITHUB_OUTPUT
+    - name: Create docker tag
+      id: create_docker_tag
+      run: |
+        TAG=sbtscala/scala-sbt:${{ matrix.javaTag }}_${{ steps.get_sbt_version.outputs.VERSION }}_${{ matrix.scalaVersion }}
+        echo "TAG=$TAG" >> $GITHUB_OUTPUT
+    - name: Build docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ matrix.dockerContext }}
+        no-cache: true
+        tags: ${{ steps.create_docker_tag.outputs.TAG }}
+        file: ${{ matrix.dockerContext }}/${{ matrix.dockerfile || 'Dockerfile' }}
+        build-args: |
+          BASE_IMAGE_TAG=${{ matrix.baseImageTag }}
+          SBT_VERSION=${{ steps.get_sbt_version.outputs.VERSION }}
+          SCALA_VERSION=${{ matrix.scalaVersion }}
+        load: true
+    - name: Test docker image as root (default)
+      if: ${{ !startsWith(matrix.scalaVersion, '2.12') }}
+      # scala --version does not work on < 2.13
+      run: |
+        docker run "${{ steps.create_docker_tag.outputs.TAG }}" /bin/bash -c "scala --version && sbt --script-version"
+    - name: Test docker image scala as sbtuser
+      if: ${{ !startsWith(matrix.scalaVersion, '2.12') }}
+      # scala --version does not work on < 2.13
+      run: |
+        docker run -u sbtuser -w /home/sbtuser "${{ steps.create_docker_tag.outputs.TAG }}" /bin/bash -c "scala --version && sbt --script-version"
+    - name: Log in to DockerHub
+      if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Rebuild and push ${{ matrix.platforms }} docker images
+      if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ matrix.dockerContext }}
+        file: ${{ matrix.dockerContext }}/${{ matrix.dockerfile || 'Dockerfile' }}
+        tags: ${{ steps.create_docker_tag.outputs.TAG }}
+        build-args: |
+          BASE_IMAGE_TAG=${{ matrix.baseImageTag }}
+          SBT_VERSION=${{ steps.get_sbt_version.outputs.VERSION }}
+          SCALA_VERSION=${{ matrix.scalaVersion }}
+        platforms: ${{ matrix.platforms }}
+        push: true
