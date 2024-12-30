@@ -1,9 +1,9 @@
-# Base Jupyter Notebook com suporte a ambiente gráfico e VNC
+# Início do Dockerfile base
 FROM quay.io/jupyter/base-notebook:2024-12-02
 
 USER root
 
-# Atualização e instalação de pacotes necessários
+# Atualiza e instala pacotes necessários para ambiente gráfico e servidor VNC
 RUN apt-get -y -qq update \
  && apt-get -y -qq install \
         dbus-x11 \
@@ -16,25 +16,26 @@ RUN apt-get -y -qq update \
         xubuntu-icon-theme \
         fonts-dejavu \
  && apt-get -y -qq remove xfce4-screensaver \
- && apt-get clean && rm -rf /var/lib/apt/lists/*
+ && mkdir -p /opt/install \
+ && chown -R $NB_UID:$NB_GID $HOME /opt/install \
+ && rm -rf /var/lib/apt/lists/*
 
-# Configuração do servidor VNC
+# Instala o servidor VNC
 ARG vncserver=tigervnc
 RUN if [ "${vncserver}" = "tigervnc" ]; then \
-        apt-get -y -qq update && \
-        apt-get -y -qq install tigervnc-standalone-server && \
-        apt-get clean && rm -rf /var/lib/apt/lists/*; \
-    elif [ "${vncserver}" = "turbovnc" ]; then \
-        wget -q -O- https://packagecloud.io/dcommander/turbovnc/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/TurboVNC.gpg && \
-        wget -O /etc/apt/sources.list.d/TurboVNC.list https://raw.githubusercontent.com/TurboVNC/repo/main/TurboVNC.list && \
-        apt-get -y -qq update && \
-        apt-get -y -qq install turbovnc && \
-        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+        echo "Installing TigerVNC"; \
+        apt-get -y -qq update; \
+        apt-get -y -qq install tigervnc-standalone-server; \
+        rm -rf /var/lib/apt/lists/*; \
     fi
 
 USER $NB_USER
 
-# Instalação de dependências Python
+# Garante permissões corretas para o cache do Conda
+RUN mkdir -p /home/jovyan/.cache/conda && \
+    chown -R $NB_UID:$NB_GID /home/jovyan/.cache/conda
+
+# Instala ambiente Conda e dependências Python
 COPY --chown=$NB_UID:$NB_GID environment.yml /tmp
 RUN . /opt/conda/bin/activate && \
     mamba env update --quiet --file /tmp/environment.yml
@@ -43,6 +44,7 @@ COPY --chown=$NB_UID:$NB_GID . /opt/install
 RUN . /opt/conda/bin/activate && \
     mamba install -y -q "nodejs>=22" && \
     pip install /opt/install
+    
 
 # Configuração para Scala e SBT
 FROM amazoncorretto:21.0.5-al2023
