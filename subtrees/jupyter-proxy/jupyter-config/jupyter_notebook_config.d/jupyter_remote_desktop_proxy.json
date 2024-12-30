@@ -1,7 +1,0 @@
-{
-  "NotebookApp": {
-    "nbserver_extensions": {
-      "jupyter_remote_desktop_proxy": true
-    }
-  }
-}
